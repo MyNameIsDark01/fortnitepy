@@ -52,11 +52,16 @@ class StoreItemBase:
         self._monthly_limit = data['monthlyLimit']
         self._offer_id = data['offerId']
         self._offer_type = data['offerType']
-        self._price = data['prices'][0]['finalPrice']
         self._refundable = data['refundable']
         self._items_grants = data['itemGrants']
         self._meta_info = data.get('metaInfo', [])
         self._meta = data.get('meta', {})
+
+        try:
+            self._price = data['prices'][0]['finalPrice']
+        except:
+            # Should add new dynamicInfo
+            self._price = 0
 
     def __str__(self) -> str:
         return self.dev_name
@@ -189,7 +194,7 @@ class FeaturedStoreItem(StoreItemBase):
     """Featured store item."""
     def __init__(self, data: dict) -> None:
         super().__init__(data)
-        self._panel = re.search('Panel(\d+)', data['categories'][0])[1]
+        self._panel = re.search('Panel(\d+)', data['categories'][0]).group(1)
 
     def __repr__(self) -> str:
         return ('<FeaturedStoreItem dev_name={0.dev_name!r} asset={0.asset!r} '
