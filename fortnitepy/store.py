@@ -212,6 +212,34 @@ class DailyStoreItem(StoreItemBase):
         return ('<DailyStoreItem dev_name={0.dev_name!r} asset={0.asset!r} '
                 'price={0.price!r}>'.format(self))
 
+class OfferStoreItem(StoreItemBase):
+    def __init__(self, data: dict) -> None:
+        super().__init__(data)
+        self._app_store_ids = data['appStoreId']
+        self._sort_priority = data['sortPriority']
+
+        self._title = data['title']
+        self._description = data['descritpion']
+
+    @property
+    def title(self) -> str:
+        return self._title
+
+    @property
+    def description(self) -> str:
+        return self._description
+    
+    @property
+    def app_store_id(self) -> str:
+        return self._app_store_ids[1]
+    
+    @property
+    def sort_priority(self) -> int:
+        return self._sort_priority
+    
+    def __repr__(self) -> str:
+        return ('<OfferStoreItem dev_name={0.dev_name!r} asset={0.asset!r} '
+                'price={0.price!r}>'.format(self))
 
 class Store:
     """Object representing store data from Fortnite Battle Royale.
