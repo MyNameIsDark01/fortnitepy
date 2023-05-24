@@ -279,7 +279,7 @@ class Store:
             'STWSpecialEventStorefront',
             data
         )
-        self._offers_items = self._create_daily_items(
+        self._offers_items = self._create_starterPack_items(
             'BRStarterKits',
             data
         )
@@ -370,3 +370,9 @@ class Store:
         storefront = self._find_storefront(data, storefront)
 
         return [DailyStoreItem(item) for item in storefront['catalogEntries']]
+
+    def _create_starterPack_items(self, storefront: str,
+                            data: dict) -> List[DailyStoreItem]:
+        storefront = self._find_storefront(data, storefront)
+
+        return [OfferStoreItem(item) for item in storefront['catalogEntries']]
