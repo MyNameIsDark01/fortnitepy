@@ -243,11 +243,32 @@ class Store:
             'BRSpecialDaily',
             data,
         )
+        self._stw_rotational_event_items = self._create_daily_items(
+            'STWRotationalEventStorefront'
+        )
+        self._stw_special_event_items = self._create_daily_items(
+            'STWSpecialEventStorefront'
+        )
+        self._offers_items = self._create_daily_items(
+            'BRStarterKits'
+        )
 
     def __repr__(self) -> str:
         return ('<Store created_at={0.created_at!r} '
                 'expires_at={0.expires_at!r}>'.format(self))
+    
+    @property
+    def special_offers_items(self) -> List[DailyStoreItem]:
+        return self._offers_items
 
+    @property
+    def stw_rotational_items(self) -> List[DailyStoreItem]:
+        return self._stw_rotational_event_items
+    
+    @property
+    def stw_event_items(self) -> List[DailyStoreItem]:
+        return self._stw_special_event_items
+    
     @property
     def featured_items(self) -> List[FeaturedStoreItem]:
         """List[:class:`FeaturedStoreItem`]: A list containing data about
