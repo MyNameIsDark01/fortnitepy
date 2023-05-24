@@ -224,7 +224,7 @@ class OfferStoreItem(StoreItemBase):
         self._sort_priority = data['sortPriority']
 
         self._title = data['title']
-        self._description = data['descritpion']
+        self._description = data['description']
 
     @property
     def title(self) -> str:
