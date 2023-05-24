@@ -289,7 +289,7 @@ class Store:
                 'expires_at={0.expires_at!r}>'.format(self))
     
     @property
-    def special_offers_items(self) -> List[DailyStoreItem]:
+    def special_offers_items(self) -> List[OfferStoreItem]:
         return self._offers_items
 
     @property
@@ -372,7 +372,7 @@ class Store:
         return [DailyStoreItem(item) for item in storefront['catalogEntries']]
 
     def _create_starterPack_items(self, storefront: str,
-                            data: dict) -> List[DailyStoreItem]:
+                            data: dict) -> List[OfferStoreItem]:
         storefront = self._find_storefront(data, storefront)
 
         return [OfferStoreItem(item) for item in storefront['catalogEntries']]
