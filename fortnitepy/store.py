@@ -189,7 +189,7 @@ class FeaturedStoreItem(StoreItemBase):
     """Featured store item."""
     def __init__(self, data: dict) -> None:
         super().__init__(data)
-        self._panel = int((data['categories'][0].split(' '))[1])
+        self._panel = re.search('\d+', data['categories'][0])[1]
 
     def __repr__(self) -> str:
         return ('<FeaturedStoreItem dev_name={0.dev_name!r} asset={0.asset!r} '
