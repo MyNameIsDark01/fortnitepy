@@ -244,13 +244,16 @@ class Store:
             data,
         )
         self._stw_rotational_event_items = self._create_daily_items(
-            'STWRotationalEventStorefront'
+            'STWRotationalEventStorefront',
+            data
         )
         self._stw_special_event_items = self._create_daily_items(
-            'STWSpecialEventStorefront'
+            'STWSpecialEventStorefront',
+            data
         )
         self._offers_items = self._create_daily_items(
-            'BRStarterKits'
+            'BRStarterKits',
+            data
         )
 
     def __repr__(self) -> str:
