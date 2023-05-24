@@ -22,6 +22,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+
+import contextlib
 import logging
 
 from aioxmpp import JID
@@ -79,11 +81,8 @@ class ExternalAuth:
         to_be_removed = ('type', 'accountId', 'externalAuthId',
                          'externalDisplayName')
         for field in to_be_removed:
-            try:
+            with contextlib.suppress(KeyError):
                 del data[field]
-            except KeyError:
-                pass
-
         self.extra_info = data
 
     def __str__(self) -> str:
@@ -447,12 +446,12 @@ class ClientUser(UserBase):
                 'jid={0.jid!r} email={0.email!r}>'.format(self))
 
     @property
-    def first_name(self) -> str:
+    def first_name(self) -> Optional[str]:
         return self.name
 
     @property
     def full_name(self) -> str:
-        return '{} {}'.format(self.name, self.last_name)
+        return f'{self.name} {self.last_name}'
 
     @property
     def jid(self) -> JID:
@@ -463,8 +462,8 @@ class ClientUser(UserBase):
 
     def _update(self, data: dict) -> None:
         super()._update(data)
-        self.name = data['name']
-        self.email = data['email']
+        self.name = data.get('name')
+        self.email = data.get('email')
         self.failed_login_attempts = data['failedLoginAttempts']
         self.last_failed_login = (from_iso(data['lastFailedLogin'])
                                   if 'lastFailedLogin' in data else None)
@@ -476,7 +475,7 @@ class ClientUser(UserBase):
         self.age_group = data['ageGroup']
         self.headless = data['headless']
         self.country = data['country']
-        self.last_name = data['lastName']
+        self.last_name = data.get('lastName')
         self.preferred_language = data['preferredLanguage']
         self.can_update_display_name = data['canUpdateDisplayName']
         self.tfa_enabled = data['tfaEnabled']

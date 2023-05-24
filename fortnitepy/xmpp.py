@@ -24,8 +24,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+
 import aioxmpp
 import asyncio
+import contextlib
 import json
 import logging
 import datetime
@@ -77,7 +79,7 @@ class EventContext:
         self.body = body
 
         self.party = self.client.party
-        self.created_at = datetime.datetime.utcnow()
+        self.created_at = datetime.datetime.now(datetime.timezone.utc)
 
 
 class EventDispatcher:
@@ -122,7 +124,7 @@ class EventDispatcher:
                     cls.process_event(client, interaction)
             return
 
-        log.debug('Received event `{}` with body `{}`'.format(type_, body))
+        log.debug(f'Received event `{type_}` with body `{body}`')
 
         coros = cls.listeners.get(type_, [])
         for coro in coros:
@@ -237,10 +239,14 @@ class WebsocketTransport:
     def __init__(self, stream: 'WebsocketXMLStream',
                  client: 'Client',
                  logger: logging.Logger,
+                 proxy: Optional[str] = None,
+                 proxy_auth: Optional[aiohttp.BasicAuth] = None,
                  ws_connector: Optional[aiohttp.BaseConnector] = None) -> None:
         self.stream = stream
         self.client = client
         self.logger = logger
+        self.proxy: Optional[str] = None
+        self.proxy_auth: Optional[aiohttp.BasicAuth] = None
         self.ws_connector = ws_connector
 
         self.xml_processor = XMLProcessor()
@@ -350,10 +356,8 @@ class WebsocketTransport:
             self._reader_task.cancel()
 
     def _close_session(self) -> None:
-        try:
+        with contextlib.suppress(AttributeError):
             return asyncio.create_task(self.session.close())
-        except AttributeError:
-            pass
 
     def close_callback(self, *args) -> None:
         self._close_event.set()
@@ -447,8 +451,16 @@ class WebsocketXMLStream(aioxmpp.protocol.XMLStream):
 
 
 class XMPPOverWebsocketConnector(aioxmpp.connector.BaseConnector):
-    def __init__(self, client, ws_connector=None):
+    def __init__(
+            self,
+            client,
+            proxy: Optional[str] = None,
+            proxy_auth: Optional[aiohttp.BasicAuth] = None,
+            ws_connector=None
+    ):
         self.client = client
+        self.proxy: Optional[str] = proxy
+        self.proxy_auth: Optional[aiohttp.BasicAuth] = proxy_auth
         self.ws_connector = ws_connector
 
     @property
@@ -488,12 +500,16 @@ class XMPPOverWebsocketConnector(aioxmpp.connector.BaseConnector):
             stream,
             self.client,
             logger,
+            proxy=self.proxy,
+            proxy_auth=self.proxy_auth,
             ws_connector=self.ws_connector
         )
         await transport.create_connection(
             'wss://{host}'.format(host=host),
             protocols=('xmpp',),
             timeout=10,
+            proxy=self.proxy,
+            proxy_auth=self.proxy_auth,
         )
 
         return transport, stream, await features_future
@@ -505,8 +521,7 @@ async def _patched_main_impl(self):
 
     override_peer = []
     if self.stream.sm_enabled:
-        sm_location = self.stream.sm_location
-        if sm_location:
+        if sm_location := self.stream.sm_location:
             override_peer.append((
                 str(sm_location[0]),
                 sm_location[1],
@@ -557,13 +572,11 @@ def _patched_done_handler(self, task):
     except asyncio.CancelledError:
         pass
     except Exception as err:
-        try:
+        with contextlib.suppress(Exception):
             if self._sm_enabled:
                 self._xmlstream.abort()
             else:
                 self._xmlstream.close()
-        except Exception:
-            pass
         self.on_failure(err)
         # self._logger.exception("broker task failed")
 
@@ -573,8 +586,16 @@ aioxmpp.stream.StanzaStream._done_handler = _patched_done_handler
 
 
 class XMPPClient:
-    def __init__(self, client: 'Client', ws_connector=None) -> None:
+    def __init__(
+            self,
+            client: 'Client',
+            proxy: Optional[str] = None,
+            proxy_auth: Optional[aiohttp.BasicAuth] = None,
+            ws_connector=None
+    ) -> None:
         self.client = client
+        self.proxy: Optional[str] = proxy
+        self.proxy_auth: Optional[aiohttp.BasicAuth] = proxy_auth
         self.ws_connector = ws_connector
 
         self.xmpp_client = None
@@ -591,10 +612,7 @@ class XMPPClient:
         self.send_presence_on_add = True
 
     def jid(self, user_id: str) -> aioxmpp.JID:
-        return aioxmpp.JID.fromstr('{}@{}'.format(
-            user_id,
-            self.client.service_host
-        ))
+        return aioxmpp.JID.fromstr(f'{user_id}@{self.client.service_host}')
 
     def _remove_illegal_characters(self, chars: str) -> str:
         fixed = []
@@ -614,12 +632,7 @@ class XMPPClient:
         sent_at = from_iso(data['sent'])
         expires_at = sent_at + datetime.timedelta(hours=4)
 
-        member = None
-        for m in data['members']:
-            if m['account_id'] == from_id:
-                member = m
-                break
-
+        member = next((m for m in data['members'] if m['account_id'] == from_id), None)
         if member is None:
             # This should theoretically never happen.
             raise RuntimeError('Inviter is missing from payload.')
@@ -638,10 +651,10 @@ class XMPPClient:
                 member_m['Platform_j']
             )['Platform']['platformStr']
 
-        if 'urn:epic:member:dn_s' in member['meta']:
+        if 'urn:epic:member:dn_s' in member_m:
             meta['urn:epic:member:dn_s'] = member_m['urn:epic:member:dn_s']
 
-        inv = {
+        return {
             'party_id': data['id'],
             'sent_by': from_id,
             'sent_to': self.client.user.id,
@@ -649,9 +662,8 @@ class XMPPClient:
             'updated_at': to_iso(sent_at),
             'expires_at': to_iso(expires_at),
             'status': 'SENT',
-            'meta': meta
+            'meta': meta,
         }
-        return inv
 
     async def process_chat_message(self, message: aioxmpp.Message) -> None:
         user_id = message.from_.localpart
@@ -667,15 +679,13 @@ class XMPPClient:
                 log.debug('Friend message discarded because friend not found.')
                 return
 
-        try:
+        with contextlib.suppress(ValueError):
             m = FriendMessage(
                 client=self.client,
                 author=author,
                 content=message.body.any()
             )
             self.client.dispatch_event('friend_message', m)
-        except ValueError:
-            pass
 
     @EventDispatcher.event('com.epicgames.friends.core.apiobjects.Friend')
     async def friend_event(self, ctx: EventContext) -> None:
@@ -698,7 +708,7 @@ class XMPPClient:
             try:
                 timestamp = body['timestamp']
             except (TypeError, KeyError):
-                timestamp = datetime.datetime.utcnow()
+                timestamp = datetime.datetime.now(datetime.timezone.utc)
 
             f = self.client.store_friend({
                 **(data or {}),
@@ -709,11 +719,8 @@ class XMPPClient:
                 'created': timestamp,
             })
 
-            try:
+            with contextlib.suppress(KeyError):
                 del self.client._pending_friends[f.id]
-            except KeyError:
-                pass
-
             # Send presence to the newly added friend as that is now
             # required to do by the server (or at least thats what
             # i suspect)
@@ -752,43 +759,30 @@ class XMPPClient:
     async def friend_remove_event(self, ctx: EventContext) -> None:
         body = ctx.body
 
-        if body['from'] == self.client.user.id:
-            _id = body['to']
-        else:
-            _id = body['from']
-
+        _id = body['to'] if body['from'] == self.client.user.id else body['from']
         if body['reason'] == 'ABORTED':
             pf = self.client.get_pending_friend(_id)
             if pf is not None:
                 self.client.store_user(pf.get_raw())
 
-                try:
+                with contextlib.suppress(KeyError):
                     del self.client._pending_friends[pf.id]
-                except KeyError:
-                    pass
-
                 self.client.dispatch_event('friend_request_abort', pf)
         elif body['reason'] == 'REJECTED':
             pf = self.client.get_pending_friend(_id)
             if pf is not None:
                 self.client.store_user(pf.get_raw())
 
-                try:
+                with contextlib.suppress(KeyError):
                     del self.client._pending_friends[pf.id]
-                except KeyError:
-                    pass
-
                 self.client.dispatch_event('friend_request_decline', pf)
         else:
             f = self.client.get_friend(_id)
             if f is not None:
                 self.client.store_user(f.get_raw())
 
-                try:
+                with contextlib.suppress(KeyError):
                     del self.client._friends[f.id]
-                except KeyError:
-                    pass
-
                 self.client.dispatch_event('friend_remove', f)
 
         try:
@@ -980,16 +974,15 @@ class XMPPClient:
             return
 
         member = party.get_member(user_id)
-        if member is None:
-            return
-
-        party._remove_member(member.id)
-
-        if party.me and party.me.leader and member.id != party.me.id:
-            await party.refresh_squad_assignments()
-
-        self.client.dispatch_event('party_member_leave', member)
-
+        if self.client.wait_for_member_meta_in_events and not member.meta.has_been_updated:
+            try:
+                await self.client.wait_for(
+                    'internal_initial_party_member_meta',
+                    check=lambda m: m.id == member.id,
+                    timeout=2
+                )
+            except asyncio.TimeoutError:
+                pass
     @EventDispatcher.event('com.epicgames.social.party.notification.v0.MEMBER_KICKED')  # noqa
     async def event_party_member_kicked(self, ctx: EventContext) -> None:
         body = ctx.body
@@ -1444,7 +1437,7 @@ class XMPPClient:
         before_pres = friend.last_presence
 
         if not is_available and friend.is_online():
-            friend._update_last_logout(datetime.datetime.utcnow())
+            friend._update_last_logout(datetime.datetime.now(datetime.timezone.utc))
 
             try:
                 del self.client._presences[user_id]
@@ -1471,7 +1464,7 @@ class XMPPClient:
                     pass
 
         async def run_reconnect():
-            now = datetime.datetime.utcnow()
+            now = datetime.datetime.now(datetime.timezone.utc)
             secs = (now - self._last_disconnected_at).total_seconds()
             if secs >= self.client.default_party_member_config.offline_ttl:
                 return await self.client._create_party()
@@ -1513,7 +1506,7 @@ class XMPPClient:
             if task is not None and not task.cancelled():
                 task.cancel()
 
-        self._last_disconnected_at = datetime.datetime.utcnow()
+        self._last_disconnected_at = datetime.datetime.now(datetime.timezone.utc)
         self.client.dispatch_event('xmpp_session_close')
 
     def setup_callbacks(self, messages: bool = True) -> None:
@@ -1579,6 +1572,8 @@ class XMPPClient:
                 self.client.service_port,
                 XMPPOverWebsocketConnector(
                     self.client,
+                    proxy=self.proxy,
+                    proxy_auth=self.proxy_auth,
                     ws_connector=self.ws_connector
                 )
             )],

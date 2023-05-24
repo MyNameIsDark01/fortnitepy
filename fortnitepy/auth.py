@@ -31,10 +31,13 @@ import uuid
 import time
 
 from random import randint
+
+import aiohttp
 from aioconsole import ainput
 from typing import TYPE_CHECKING, Optional, Any, List
 
 from .errors import AuthException, HTTPException
+from .http import AccountPublicService
 from .typedefs import StrOrMaybeCoro
 from .utils import from_iso
 
@@ -88,10 +91,8 @@ class Auth:
                     ('errors.com.epicgames.account.oauth.'
                      'expired_exchange_code_session'),
                 )
-                if exc.message_code in codes:
-                    if i != max_attempts-1:
-                        continue
-
+                if exc.message_code in codes and i != max_attempts-1:
+                    continue
                 raise
             except asyncio.CancelledError:
                 return False
@@ -631,6 +632,81 @@ class AuthorizationCodeAuth(ExchangeCodeAuth):
         return data
 
 
+class DeviceCodeAuth(Auth):
+    device_code: str
+    expires_at: datetime.datetime
+    interval: int
+
+    async def identifier(self) -> str:
+        return self.device_code
+
+    async def create_code(self) -> str:
+        async with aiohttp.ClientSession() as session:
+            payload = {
+                'grant_type': 'client_credentials'
+            }
+            headers = {
+                'Authorization': 'basic {0}'.format(self.ios_token)
+            }
+            url = AccountPublicService('/account/api/oauth/token').url
+            async with session.post(url, data=payload, headers=headers) as r:
+                client_credentials = await r.json()
+            client_access_token = client_credentials['access_token']
+
+            params = {
+                'prompt': 'login'
+            }
+            headers = {
+                'Authorization': 'bearer {0}'.format(client_access_token),
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
+            url = AccountPublicService('/account/api/oauth/deviceAuthorization').url
+            async with session.post(url, params=params, headers=headers) as r:
+                device_code = await r.json()
+
+            self.device_code = device_code['device_code']
+            self.expires_at = datetime.datetime.now() + datetime.timedelta(seconds=device_code['expires_in'])
+            self.interval = device_code['interval']
+            return device_code['user_code']
+
+    async def ios_authenticate(self, priority: int = 0) -> dict:
+        payload = {
+            'grant_type': 'device_code',
+            'device_code': self.device_code,
+        }
+
+        while datetime.datetime.now() < (self.expires_at - datetime.timedelta(seconds=5)):
+            try:
+                return await self.client.http.account_oauth_grant(
+                    auth='basic {0}'.format(self.ios_token),
+                    data=payload,
+                    priority=priority,
+                )
+            except HTTPException as e:
+                if e.message_code == 'errors.com.epicgames.account.oauth.authorization_pending':
+                    await asyncio.sleep(self.interval)
+                elif e.message_code == 'errors.com.epicgames.not_found':
+                    break
+                else:
+                    raise
+
+        raise AuthException(
+            'Device code hasn\'t been authorized in time.', asyncio.TimeoutError('Authorization timed out.')
+        )
+
+    async def authenticate(self, priority: int = 0) -> None:
+        data = await self.ios_authenticate(priority=priority)
+        self._update_ios_data(data)
+
+        code = await self.get_exchange_code(priority=priority)
+        data = await self.exchange_code_for_session(
+            self.fortnite_token,
+            code,
+            priority=priority
+        )
+        self._update_data(data)
+
+
 class DeviceAuth(Auth):
     """Authenticate with device auth details.
 
@@ -696,8 +772,13 @@ class DeviceAuth(Auth):
 
             if exc.message_code == 'errors.com.epicgames.oauth.corrective_action_required':
                 action = exc.raw.get('correctiveAction')
-                log.debug("Corrective action is required: " + action)
+                log.debug(f"Corrective action is required: {action}")
                 if action == 'DATE_OF_BIRTH':
+                    if not self.client.correct_birthday:
+                        raise AuthException(
+                            'Correct birthday is required to continue.',
+                            exc
+                        ) from exc
                     client_credentials = await self.get_ios_client_credentials()
                     client_access_token = client_credentials.get('access_token')
 

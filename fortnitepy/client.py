@@ -27,11 +27,15 @@ import asyncio
 import logging
 import time
 
+import aiohttp
 from aioxmpp import JID
 from aiohttp import BaseConnector
-from typing import (Iterable, Union, Optional, Any, Awaitable, Callable, Dict,
-                    List, Tuple)
+from typing import Iterable, Union, Optional, Any, Awaitable, Callable, Dict, List, Tuple
 
+from .code import Code
+from .creative import CreativeDiscovery
+from .profile import BattleRoyaleProfile, CommonCoreProfile, SaveTheWorldProfile, DailyRewardNotification, \
+    BattleRoyaleInventory
 from .errors import (PartyError, HTTPException, NotFound, Forbidden,
                      DuplicateFriendship, FriendshipRequestAlreadySent,
                      MaxFriendshipsExceeded, InviteeMaxFriendshipsExceeded,
@@ -43,7 +47,7 @@ from .user import (ClientUser, User, BlockedUser, SacSearchEntryUser,
 from .friend import Friend, IncomingPendingFriend, OutgoingPendingFriend
 from .enums import (Platform, Region, UserSearchPlatform, AwayStatus,
                     SeasonStartTimestamp, SeasonEndTimestamp,
-                    BattlePassStat, StatsCollectionType)
+                    BattlePassStat, StatsCollectionType, VBucksPlatform)
 from .party import (DefaultPartyConfig, DefaultPartyMemberConfig, ClientParty,
                     Party)
 from .stats import StatsV2, StatsCollection, _StatsBase
@@ -491,13 +495,21 @@ class BasicClient:
 
         self.kill_other_sessions = True
         self.accept_eula = True
+        self.correct_birthday = True
         self.event_prefix = 'event_'
 
         self.auth = auth
+
+        proxy: Optional[str] = kwargs.pop('proxy', None)
+        proxy_auth: Optional[aiohttp.BasicAuth] = kwargs.pop('proxy_auth', None)
+        proxied_endpoints: List[str] = kwargs.pop('proxied_endpoints', None)
         self.http = HTTPClient(
             self,
             connector=kwargs.get('http_connector'),
-            retry_config=kwargs.get('http_retry_config')
+            retry_config=kwargs.get('http_retry_config'),
+            proxy=proxy,
+            proxy_auth=proxy_auth,
+            proxied_endpoints=proxied_endpoints
         )
         self.http.add_header('Accept-Language', 'en-EN')
 
@@ -2503,6 +2515,102 @@ class BasicClient:
             'BasicClient does not support party actions.'
         )
 
+    async def fetch_battle_royale_profile(self) -> Optional[BattleRoyaleProfile]:
+        profile_data = await self.http.query_profile('athena')
+        if not profile_data or not profile_data['profileChanges']:
+            return None
+        profile_change = profile_data['profileChanges'][0]
+        return BattleRoyaleProfile(profile_change['profile'])
+
+    async def fetch_common_profile(self) -> Optional[CommonCoreProfile]:
+        profile_data = await self.http.query_profile('common_core')
+        if not profile_data or not profile_data['profileChanges']:
+            return None
+        profile_change = profile_data['profileChanges'][0]
+        return CommonCoreProfile(profile_change['profile'])
+
+    async def fetch_save_the_world_profile(self) -> Optional[SaveTheWorldProfile]:
+        profile_data = await self.http.query_profile('campaign')
+        if not profile_data or not profile_data['profileChanges']:
+            return None
+        profile_change = profile_data['profileChanges'][0]
+        return SaveTheWorldProfile(profile_change['profile'])
+
+    async def set_creator_code(self, creator_code: str):
+        await self.http.set_affiliate_name(creator_code)
+
+    async def claim_login_rewards(self) -> DailyRewardNotification:
+        profile_data = await self.http.claim_login_reward('campaign')
+        notifications = [n for n in profile_data['notifications'] if n['type'] == 'daily_rewards']
+        return DailyRewardNotification(notifications[0])
+
+    async def set_vbucks_platform(self, platform: VBucksPlatform):
+        await self.http.set_mtx_platform(platform.value)
+
+    async def purchase_item(
+            self,
+            offer_id: str,
+            currency_type: str,
+            currency_sub_type: str,
+            expected_price: int,
+            quantity: int = 1
+    ):
+        await self.http.purchase_catalog_entry(offer_id, quantity, currency_type, currency_sub_type, expected_price)
+
+    async def gift_item(
+            self,
+            receiver_account_ids: List[str],
+            offer_id: str,
+            currency_type: str,
+            currency_sub_type: str,
+            expected_price: int,
+            gift_wrap: Optional[int]
+    ):
+        await self.http.gift_catalog_entry(
+            offer_id, currency_type, currency_sub_type, expected_price, receiver_account_ids,
+            f'GiftBox:GB_GiftWrap{gift_wrap}' if gift_wrap else None
+        )
+
+    async def refund_item(self, purchase_id: str, quick_return: bool):
+        await self.http.refund_mtx_purchase(purchase_id, quick_return)
+
+    async def fetch_code(self, code: str) -> Optional[Code]:
+        data = await self.http.code_redemption_get_code_info(code)
+        return Code(data)
+
+    async def fetch_br_inventory(self, user_id: str) -> Optional[BattleRoyaleInventory]:
+        data = await self.http.get_br_inventory(user_id)
+        return BattleRoyaleInventory(data)
+
+    async def fetch_friends(
+            self,
+            include_pending: bool = False
+    ) -> Tuple[List[Friend], List[IncomingPendingFriend], List[OutgoingPendingFriend]]:
+        data = await self.http.friends_get_all(include_pending=include_pending)
+        ids = [f['accountId'] for f in data]
+        users = {u.id: u.get_raw() for u in await self.fetch_users(ids, cache=True)}
+        friends, incoming_friends, outgoing_friends = [], [], []
+        for friend in data:
+            try:
+                user_data = users[friend['accountId']]
+            except KeyError:
+                continue
+
+            if friend['status'] == 'ACCEPTED':
+                friends.append(Friend(self, {**friend, **user_data}))
+
+            elif friend['status'] == 'PENDING':
+                if friend['direction'] == 'INBOUND':
+                    incoming_friends.append(IncomingPendingFriend(self, {**friend, **user_data}))
+                else:
+                    outgoing_friends.append(OutgoingPendingFriend(self, {**friend, **user_data}))
+
+        return friends, incoming_friends, outgoing_friends
+
+    async def fetch_creative_discovery(self, region: Region) -> CreativeDiscovery:
+        data = await self.http.creative_discovery(region.value)
+        return CreativeDiscovery(data)
+
 
 class Client(BasicClient):
     """Represents the client connected to Fortnite and EpicGames' services.
@@ -2614,7 +2722,9 @@ class Client(BasicClient):
         self.wait_for_member_meta_in_events = kwargs.get('wait_for_member_meta_in_events', True)  # noqa
         self.leave_party_at_shutdown = kwargs.get('leave_party_at_shutdown', True)  # noqa
 
-        self.xmpp = XMPPClient(self, ws_connector=kwargs.get('ws_connector'))
+        proxy: Optional[str] = kwargs.pop('proxy', None)
+        proxy_auth: Optional[aiohttp.BasicAuth] = kwargs.pop('proxy_auth', None)
+        self.xmpp = XMPPClient(self, proxy=proxy, proxy_auth=proxy_auth, ws_connector=kwargs.get('ws_connector'))
         self.party = None
 
         self._listeners = {}

@@ -30,7 +30,7 @@ import re
 import time
 import functools
 
-from typing import TYPE_CHECKING, Iterable, List, Optional, Any, Union, Tuple
+from typing import TYPE_CHECKING, Iterable, List, Optional, Any, Union, Tuple, Literal
 from urllib.parse import quote as urllibquote
 
 from .utils import MaybeLock
@@ -112,6 +112,7 @@ class HTTPRetryConfig:
         unrealistically high wait times. Defaults to ``20``. *Only matters
         when ``handle_capacity_throttling`` is ``True``*
     """
+
     def __init__(self, **kwargs):
         self.max_retry_attempts = kwargs.get('max_retry_attempts', 5)
         self.max_wait_time = kwargs.get('max_wait_time', 65)
@@ -333,6 +334,26 @@ class AvatarService(Route):
     AUTH = 'FORTNITE_ACCESS_TOKEN'
 
 
+class CodeRedemptionService(Route):
+    BASE = 'https://coderedemption-public-service-prod.ol.epicgames.com'
+    AUTH = 'FORTNITE_ACCESS_TOKEN'
+
+
+class CreativeDiscoveryService(Route):
+    BASE = 'https://fn-service-discovery-live-public.ogs.live.on.epicgames.com'
+    AUTH = 'FORTNITE_ACCESS_TOKEN'
+
+
+class MCPService(Route):
+    BASE = 'https://fngw-mcp-gc-livefn.ol.epicgames.com'
+    AUTH = 'FORTNITE_ACCESS_TOKEN'
+
+
+class RankedService(Route):
+    BASE = 'https://fn-service-habanero-live-public.ogs.live.on.epicgames.com'
+    AUTH = 'FORTNITE_ACCESS_TOKEN'
+
+
 def create_aiohttp_closed_event(session) -> asyncio.Event:
     """Work around aiohttp issue that doesn't properly close transports on exit.
 
@@ -388,9 +409,15 @@ def create_aiohttp_closed_event(session) -> asyncio.Event:
 
 class HTTPClient:
     def __init__(self, client: 'Client', *,
+                 proxy: Optional[str] = None,
+                 proxy_auth: Optional[aiohttp.BasicAuth] = None,
+                 proxied_endpoints: List[str] = None,
                  connector: aiohttp.BaseConnector = None,
                  retry_config: Optional[HTTPRetryConfig] = None) -> None:
         self.client = client
+        self.proxy: Optional[str] = proxy
+        self.proxy_auth: Optional[aiohttp.BasicAuth] = proxy_auth
+        self.proxied_endpoints: List[str] = proxied_endpoints
         self.connector = connector
         self.retry_config = retry_config or HTTPRetryConfig()
 
@@ -407,7 +434,7 @@ class HTTPClient:
 
     @staticmethod
     async def json_or_text(response: aiohttp.ClientResponse) -> Union[str,
-                                                                      dict]:
+    dict]:
         text = await response.text(encoding='utf-8')
         if 'application/json' in response.headers.get('content-type', ''):
             return json.loads(text)
@@ -470,13 +497,22 @@ class HTTPClient:
         except KeyError:
             pass
 
+        if not self.proxied_endpoints or any(url.startswith(e) for e in self.proxied_endpoints):
+            # Proxy support
+            if self.proxy is not None:
+                kwargs['proxy'] = self.proxy
+            if self.proxy_auth is not None:
+                kwargs['proxy_auth'] = self.proxy_auth
+
         pre_time = time.time()
         async with self.__session.request(method, url, **kwargs) as r:
-            log.debug('{0} {1} has returned {2.status} in {3:.2f}s'.format(
+            log.debug('{0} {1} {5}has returned {2.status} in {3:.2f}s with response size {4}'.format(
                 method,
                 url,
                 r,
-                time.time() - pre_time
+                time.time() - pre_time,
+                r.headers.get('content-length', 'unknown'),
+                'via proxy ' if 'proxy' in kwargs else ''
             ))
 
             data = await self.json_or_text(r)
@@ -526,9 +562,9 @@ class HTTPClient:
             if isinstance(data, str):
                 m = GRAPHQL_HTML_ERROR_PATTERN.search(data)
                 error_data = ({
-                    'serviceResponse': '',
-                    'message': 'Unknown reason' if m is None else m.group(1)
-                },)
+                                  'serviceResponse': '',
+                                  'message': 'Unknown reason' if m is None else m.group(1)
+                              },)
                 if m is not None:
                     error_data[0]['serviceResponse'] = json.dumps({
                         'errorStatus': int(m.group(2))
@@ -538,11 +574,11 @@ class HTTPClient:
                 if data['status'] >= 400:
                     message = data['message']
                     error_data = ({
-                        'serviceResponse': json.dumps({
-                            'errorCode': message
-                        }),
-                        'message': message
-                    },)
+                                      'serviceResponse': json.dumps({
+                                          'errorCode': message
+                                      }),
+                                      'message': message
+                                  },)
             else:
                 error_data = None
                 for child_data in data:
@@ -706,8 +742,9 @@ class HTTPClient:
                                 except asyncio.CancelledError:
                                     lock.failed = True
                                     retry = False
-                                except Exception:
+                                except Exception as e:
                                     if self.client.can_restart():
+                                        log.info(f'Restarting client due to auth error: {e}.')  # noqa
                                         await self.client.restart()
                                     else:
                                         lock.failed = True
@@ -756,8 +793,8 @@ class HTTPClient:
                                 sleep_time = backoff
 
                 elif (code == 'errors.com.epicgames.common.concurrent_modification_error'  # noqa
-                        or code == 'errors.com.epicgames.common.server_error'
-                        or gql_server_error):  # noqa
+                      or code == 'errors.com.epicgames.common.server_error'
+                      or gql_server_error):  # noqa
                     sleep_time = 0.5 + (tries - 1) * 2
 
                 if sleep_time > 0:
@@ -813,7 +850,7 @@ class HTTPClient:
         return await self.fn_request('PUT', route, auth, **kwargs)
 
     async def graphql_request(self, graphql: Union[GraphQLRequest,
-                                                   List[GraphQLRequest]],
+    List[GraphQLRequest]],
                               auth: Optional[str] = None,
                               **kwargs: Any) -> Any:
         return await self.fn_request('POST', EpicGamesGraphQL(), auth, graphql,
@@ -1039,6 +1076,23 @@ class HTTPClient:
 
         return await self.put(r, json=payload, auth=auth)
 
+    async def account_create_device_code(self, auth: str):
+        r = AccountPublicService('/account/api/oauth/deviceAuthorization')
+
+        params = {
+            'prompt': 'login'
+        }
+
+        return await self.post(r, params=params, auth=auth)
+
+    async def account_delete_device_code(self, user_code: str, auth: str):
+        r = AccountPublicService(
+            '/account/api/oauth/deviceAuthorization/{user_code}',
+            user_code=user_code
+        )
+
+        return await self.delete(r, auth=auth)
+
     async def account_generate_device_auth(self, client_id: str) -> dict:
         r = AccountPublicService(
             '/account/api/public/account/{client_id}/deviceAuth',
@@ -1204,6 +1258,43 @@ class HTTPClient:
         ), **kwargs)
 
     ###################################
+    #         Code Redemption         #
+    ###################################
+
+    async def code_redemption_get_code_info(self, code: str) -> dict:
+        r = CodeRedemptionService(
+            '/coderedemption/api/shared/accounts/{client_id}/redeem/{code}/evaluate',
+            client_id=self.client.user.id, code=code
+        )
+        return await self.get(r)
+
+    ###################################
+    #        Creative Discovery       #
+    ###################################
+
+    async def creative_discovery(self, region: str) -> dict:
+        payload = {
+            'surfaceName': 'CreativeDiscoverySurface_Frontend',
+            'revision': -1,
+            'partyMemberIds': [self.client.user.id],
+            'matchmakingRegion': region
+        }
+
+        params = {
+            'appId': 'Fortnite'
+        }
+
+        r = CreativeDiscoveryService(
+            '/api/v1/discovery/surface/{client_id}',
+            client_id=self.client.user.id,
+        )
+        return await self.post(r, json=payload, params=params)
+
+    async def check_fortnite_access(self) -> dict:
+        r = MCPService('/fortnite/api/accesscontrol/status')
+        return await self.get(r)
+
+    ###################################
     #          Eula Tracking          #
     ###################################
 
@@ -1257,6 +1348,119 @@ class HTTPClient:
     async def fortnite_get_timeline(self) -> dict:
         r = FortnitePublicService('/fortnite/api/calendar/v1/timeline')
         return await self.get(r)
+
+    async def query_profile(self, profile_id: Literal['athena', 'campaign', 'common_core']) -> dict:
+        r = FortnitePublicService(
+            '/fortnite/api/game/v2/profile/{client_id}/client/QueryProfile?profileId={profile_id}&rvn=-1',
+            client_id=self.client.user.id,
+            profile_id=profile_id,
+        )
+        return await self.post(r, json={})
+
+    async def query_public_profile(self, user_id: str, profile_id: Literal['campaign', 'common_public']) -> dict:
+        r = FortnitePublicService(
+            '/fortnite/api/game/v2/profile/{user_id}/client/QueryProfile?profileId={profile_id}&rvn=-1',
+            user_id=user_id,
+            profile_id=profile_id,
+        )
+        return await self.post(r, json={})
+
+    async def claim_login_reward(self, profile_id: Literal['campaign', 'profile0']) -> dict:
+        r = FortnitePublicService(
+            '/fortnite/api/game/v2/profile/{client_id}/client/ClaimLoginReward?profileId={profile_id}&rvn=-1',
+            client_id=self.client.user.id,
+            profile_id=profile_id,
+        )
+        return await self.post(r, json={})
+
+    async def set_affiliate_name(self, affiliate_name: str) -> dict:
+        r = FortnitePublicService(
+            '/fortnite/api/game/v2/profile/{client_id}/client/SetAffiliateName?profileId=common_core&rvn=-1',
+            client_id=self.client.user.id,
+        )
+        payload = {
+            "affiliateName": affiliate_name
+        }
+        return await self.post(r, json=payload)
+
+    async def set_mtx_platform(self, new_platform: str) -> dict:
+        r = FortnitePublicService(
+            '/fortnite/api/game/v2/profile/{client_id}/client/SetMtxPlatform?profileId=common_core&rvn=-1',
+            client_id=self.client.user.id,
+        )
+        payload = {
+            "newPlatform": new_platform
+        }
+        return await self.post(r, json=payload)
+
+    async def purchase_catalog_entry(
+            self,
+            offer_id: str,
+            purchase_quantity: int,
+            currency_type: str,
+            currency_sub_type: str,
+            expected_total_price: int,
+    ) -> dict:
+        r = FortnitePublicService(
+            '/fortnite/api/game/v2/profile/{client_id}/client/PurchaseCatalogEntry?profileId=common_core&rvn=-1',
+            client_id=self.client.user.id,
+        )
+        payload = {
+            'offerId': offer_id,
+            'purchaseQuantity': purchase_quantity,
+            'currency': currency_type,
+            'currencySubType': currency_sub_type,
+            'expectedTotalPrice': expected_total_price,
+            'gameContext': 'Frontend.CatabaScreen',
+        }
+        return await self.post(r, json=payload)
+
+    async def gift_catalog_entry(
+            self,
+            offer_id: str,
+            currency_type: str,
+            currency_sub_type: str,
+            expected_total_price: int,
+            receiver_account_ids: List[str],
+            gift_wrap_template_id: str,
+    ) -> dict:
+        r = FortnitePublicService(
+            '/fortnite/api/game/v2/profile/{client_id}/client/GiftCatalogEntry?profileId=common_core&rvn=-1',
+            client_id=self.client.user.id,
+        )
+        payload = {
+            'offerId': offer_id,
+            'currency': currency_type,
+            'currencySubType': currency_sub_type,
+            'expectedTotalPrice': expected_total_price,
+            'gameContext': 'Frontend.CatabaScreen',
+            'receiverAccountIds': receiver_account_ids,
+            'giftWrapTemplateId': gift_wrap_template_id,
+            'personalMessage': ''
+        }
+        return await self.post(r, json=payload)
+
+    async def refund_mtx_purchase(
+            self,
+            purchase_id: str,
+            quick_return: bool = True,
+    ) -> dict:
+        r = FortnitePublicService(
+            '/fortnite/api/game/v2/profile/{client_id}/client/RefundMtxPurchase?profileId=common_core&rvn=-1',
+            client_id=self.client.user.id,
+        )
+        payload = {
+            'purchaseId': purchase_id,
+            'quickReturn': quick_return,
+            'gameContext': 'Frontend.AthenaLobby',
+        }
+        return await self.post(r, json=payload)
+
+    async def get_br_inventory(self, user_id: str) -> dict:
+        r = FortnitePublicService(
+            '/fortnite/api/game/v2/br-inventory/account/{user_id}', user_id=user_id
+        )
+        return await self.get(r, json={})
 
     ###################################
     #        Fortnite Content         #
@@ -1418,6 +1622,26 @@ class HTTPClient:
             '/statsproxy/api/statsv2/leaderboards/{stat}',
             stat=stat
         )
+        return await self.get(r)
+
+    ###################################
+    #             Ranked              #
+    ###################################
+
+    async def get_ranked_season(self, *, ends_after: Optional[str] = None) -> dict:
+        params = {}
+        if ends_after:
+            params['endsAfter'] = ends_after
+
+        r = RankedService('/api/v1/games/fortnite/tracks/query')
+        return await self.get(r)
+
+    async def get_ranked_stats(self, user_id: str, *, ends_after: Optional[str] = None) -> dict:
+        params = {}
+        if ends_after:
+            params['endsAfter'] = ends_after
+
+        r = RankedService('/api/v1/games/fortnite/trackprogress/{user_id}', user_id=user_id)
         return await self.get(r)
 
     ###################################

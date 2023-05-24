@@ -173,10 +173,7 @@ class StoreItemBase:
         """:class:`bool`: ``True`` if the item is in the item shop for
         the first time, else ``False``.
         """
-        for meta in self._meta_info:
-            if meta['value'].lower() == 'new':
-                return True
-        return False
+        return any(meta['value'].lower() == 'new' for meta in self._meta_info)
 
     @property
     def violator(self) -> Optional[str]:
@@ -184,8 +181,7 @@ class StoreItemBase:
         red tag at the top of an item in the shop. Will be ``None``
         if no violator is found for this item.
         """
-        unfixed = self._meta.get('BannerOverride')
-        if unfixed:
+        if unfixed := self._meta.get('BannerOverride'):
             return ' '.join(re.findall(r'[A-Z][^A-Z]*', unfixed))
 
 
@@ -315,16 +311,10 @@ class Store:
                                data: dict) -> List[FeaturedStoreItem]:
         storefront = self._find_storefront(data, storefront)
 
-        res = []
-        for item in storefront['catalogEntries']:
-            res.append(FeaturedStoreItem(item))
-        return res
+        return [FeaturedStoreItem(item) for item in storefront['catalogEntries']]
 
     def _create_daily_items(self, storefront: str,
                             data: dict) -> List[DailyStoreItem]:
         storefront = self._find_storefront(data, storefront)
 
-        res = []
-        for item in storefront['catalogEntries']:
-            res.append(DailyStoreItem(item))
-        return res
+        return [DailyStoreItem(item) for item in storefront['catalogEntries']]

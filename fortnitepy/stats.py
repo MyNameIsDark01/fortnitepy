@@ -22,7 +22,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+
+import contextlib
 import datetime
+from typing import Optional, Dict
 
 from .user import User
 from .enums import Platform
@@ -48,7 +51,7 @@ class _StatsBase:
         self._start_time = datetime.datetime.utcfromtimestamp(data['startTime'])  # noqa
 
         if data['endTime'] == 9223372036854775807:
-            self._end_time = datetime.datetime.utcnow()
+            self._end_time = datetime.datetime.now(datetime.timezone.utc)
         else:
             self._end_time = datetime.datetime.utcfromtimestamp(data['endTime'])  # noqa
 
@@ -172,8 +175,7 @@ class StatsV2(_StatsBase):
             winper = (wins * 100) / matches
         except ZeroDivisionError:
             winper = 0
-        if winper > 100:
-            winper = 100
+        winper = min(winper, 100)
         return float(format(winper, '.2f'))
 
     def parse(self) -> None:
@@ -188,10 +190,8 @@ class StatsV2(_StatsBase):
             inp = parts[2]
             playlist = '_'.join(parts[5:])
 
-            try:
+            with contextlib.suppress(KeyError):
                 name = replacers[name]
-            except KeyError:
-                pass
 
             if name == 'lastmodified':
                 stat = datetime.datetime.utcfromtimestamp(stat)
@@ -326,3 +326,25 @@ class StatsCollection(_StatsBase):
             Mapping of the users collection.
         """
         return super().get_stats()
+
+
+class RankedStats:
+
+    def __init__(self, data: dict) -> None:
+        self.raw = data
+        self.stats: Dict[str, RankedStatsEntry] = {}
+
+        for entry in data:
+            self.stats[entry['rankingType']] = RankedStatsEntry(entry)
+
+
+class RankedStatsEntry:
+
+    def __init__(self, data: dict) -> None:
+        self.raw: dict = data
+        self.track_guid: str = data['trackguid']
+        self.last_update: datetime.datetime = datetime.datetime.utcfromtimestamp(data['lastupdate'])
+        self.current_division: int = data['currentDivision']
+        self.highest_division: int = data['highestDivision']
+        self.promotion_progress: float = data['promotionProgress']
+        self.current_player_ranking: Optional[int] = data['currentPlayerRanking']

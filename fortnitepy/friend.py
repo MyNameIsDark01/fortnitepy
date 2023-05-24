@@ -206,15 +206,12 @@ class Friend(FriendBase):
             ``True`` if the friend is currently online else ``False``.
         """
         pres = self.last_presence
-        if pres is None:
-            return False
-        return pres.available
+        return False if pres is None else pres.available
 
     def _online_check(self, available: bool) -> bool:
         def check(b, a):
-            if a.friend.id != self.id:
-                return False
-            return a.available is available
+            return False if a.friend.id != self.id else a.available is available
+
         return check
 
     async def wait_until_online(self) -> None:
@@ -322,7 +319,7 @@ class Friend(FriendBase):
             ignored = ('errors.com.epicgames.common.unsupported_media_type',
                        'errors.com.epicgames.validation.validation_failed')
             if e.message_code in ignored:
-                raise ValueError('Invalid nickname')
+                raise ValueError('Invalid nickname') from e
             raise
         self._nickname = nickname
 
@@ -367,7 +364,7 @@ class Friend(FriendBase):
             ignored = ('errors.com.epicgames.common.unsupported_media_type',
                        'errors.com.epicgames.validation.validation_failed')
             if e.message_code in ignored:
-                raise ValueError('Invalid note')
+                raise ValueError('Invalid note') from e
             raise
         self._note = note
 
@@ -487,13 +484,13 @@ class Friend(FriendBase):
             if exc.message_code == m:
                 raise PartyError(
                     'The bot is already a part of this friends party.'
-                )
+                ) from exc
 
             m = 'errors.com.epicgames.social.party.user_has_no_party'
             if exc.message_code == m:
                 raise FriendOffline(
                     'The friend you requested to join is offline.'
-                )
+                ) from exc
 
             raise
 
@@ -527,7 +524,7 @@ class Friend(FriendBase):
 
             m = 'errors.com.epicgames.modules.gamesubcatalog.catalog_out_of_date'  # noqa
             if exc.message_code == m:
-                raise InvalidOffer('The offer_id passed is not valid.')
+                raise InvalidOffer('The offer_id passed is not valid.') from exc
 
             raise
 
@@ -590,8 +587,7 @@ class IncomingPendingFriend(PendingFriendBase):
         :class:`Friend`
             Object of the friend you just added.
         """
-        friend = await self.client.accept_friend(self.id)
-        return friend
+        return await self.client.accept_friend(self.id)
 
     async def decline(self) -> None:
         """|coro|
